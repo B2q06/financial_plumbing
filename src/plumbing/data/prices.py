@@ -22,6 +22,9 @@ import os
 from plumbing.config import EODHD_TOKEN, PARQUET_BY_DATE, PARQUET_BY_TICKER
 
 
+from plumbing.data.master import TickerNotFound, path_for
+
+
 log = logging.getLogger(__name__)
 
 
@@ -263,3 +266,44 @@ def last_stored_date() -> dt.date:
         ticker_frontier,
     )
     return result
+
+
+def repull(ticker: str) -> Path:
+    """Replace one security's whole price file with fresh full history from EODHD (1 quota unit).
+
+    Use after a split or dividend (adjusted history changed), to patch a series that looks wrong, or in bulk via
+    ``jobs.refresh.repull_all``. Writes ``prices_by_ticker/<FIGI>.parquet`` atomically; safe to run concurrently
+    for different tickers.
+
+    Args:
+        ticker: e.g. ``"AAPL"``; case-insensitive; must be in the security master.
+
+    Returns:
+        Path of the rewritten file.
+
+    Raises:
+        TickerNotFound: not in the security master.
+        ValueError: EODHD returned no history.
+        httpx.HTTPStatusError: see ``eodhd_get``.
+    """
+    ticker = ticker.upper()
+    final = path_for(ticker)  # raises TickerNotFound before any network call
+
+    r = eodhd_get(f"eod/{ticker}.US", timeout=120, order="a")
+    df = pd.DataFrame(r.json())
+    if df.empty:
+        raise ValueError(f"EODHD returned no history for {ticker}")
+
+    keep = ["date", "open", "high", "low", "close", "adjusted_close", "volume"]
+    df = df[keep]
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df = df.sort_values("date").drop_duplicates("date", keep="last")
+
+    # No store lock here: the temp+replace is atomic per file, so concurrent repulls of different tickers are safe,
+    # and a reader never sees a half-written file. Compaction takes STORE_LOCK because it touches many files.
+    tmp = final.with_name(final.name + ".tmp")
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, final)
+
+    log.info("repull %s -> %s: %d bars %s..%s", ticker, final.name, len(df), df["date"].iloc[0], df["date"].iloc[-1])
+    return final
