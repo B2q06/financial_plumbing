@@ -1,0 +1,44 @@
+[project]
+name = "financial-plumbing"
+version = "0.1.0"
+description = "Self-maintaining daily price store for every US-listed instrument (EODHD), FIGI-keyed security master; growing into a factor manager"
+readme = "README.md"
+authors = [
+    { name = "b2q06", email = "manager_601278@pm.me" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "duckdb>=1.4.4",
+    "fastapi>=0.129.0",
+    "httpx>=0.28.1",
+    "numpy>=2.4",
+    "pandas>=3.0.0",
+    "psycopg[binary]>=3.3",
+    "pyarrow>=23.0.1",
+    "python-dotenv>=1.2.1",
+    "typer>=0.24.1",
+    "uvicorn>=0.40.0",
+]
+
+[project.scripts]
+plumbing = "plumbing.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "plumbing"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.17.1",
+    "pytest>=9.0.2",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 120
