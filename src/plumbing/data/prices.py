@@ -222,3 +222,44 @@ def write_day(df: pd.DataFrame) -> Path:
     log.info("write_day %s: %d rows -> %s", day, len(df), final.name)
 
     return final
+
+
+def last_stored_date() -> dt.date:
+    """The store's frontier: the newest day we have.
+
+    Later of the newest inbox filename and the most common last date across the ticker files. The daily refresh
+    starts from this day (not the day after) so late-arriving rows for the frontier day get picked up.
+
+    Returns:
+        ``datetime.date``.
+    """
+    inbox_dates = []
+
+    for p in PARQUET_BY_DATE.glob("*.parquet"):
+        inbox_dates.append(dt.date.fromisoformat(p.stem))
+
+    paths = [str(p) for p in PARQUET_BY_TICKER.glob("*.parquet")]
+
+    sql = """
+     SELECT last_bar
+        FROM (
+            SELECT filename, CAST(max(date) AS DATE) AS last_bar
+            FROM read_parquet(?, union_by_name=true, filename=true)
+            GROUP BY filename
+        )
+        GROUP BY last_bar
+        ORDER BY count(*) DESC
+        LIMIT 1
+    """
+
+    conn = duckdb.connect()
+    ticker_frontier = conn.execute(sql, [paths]).fetchone()[0]
+
+    result = max(inbox_dates + [ticker_frontier])
+    log.debug(
+        "last_stored_date -> %s (inbox newest %s, ticker vote %s)",
+        result,
+        max(inbox_dates, default=None),
+        ticker_frontier,
+    )
+    return result
