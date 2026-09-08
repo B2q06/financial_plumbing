@@ -182,3 +182,43 @@ def fetch_bulk_prices(date: str) -> pd.DataFrame:
     log.info("fetch_bulk_prices %s: %d rows", date, len(df))
     assert isinstance(df, pd.DataFrame)
     return df
+
+
+def write_day(df: pd.DataFrame) -> Path:
+    """Write one day's bulk frame to the inbox as ``prices_by_date/YYYY-MM-DD.parquet``.
+
+    Temp file then ``os.replace``, so a reader never sees a partial file and a re-pull of the same day simply
+    replaces the earlier one.
+
+    Args:
+        df: a frame from ``fetch_bulk_prices`` (single date, any number of tickers).
+
+    Returns:
+        Path of the written file.
+
+    Raises:
+        ValueError: empty frame, or more than one date in it.
+        FileNotFoundError: the inbox directory doesn't exist (create it once by hand; never auto-created).
+    """
+    if df.empty:
+        raise ValueError("the df is empty, cannot write")
+
+    day = pd.to_datetime(df["date"].iloc[0]).date()
+
+    if not (df["date"] == day).all():
+        raise ValueError("write_day expects a single-day")
+
+    if not PARQUET_BY_DATE.is_dir():
+        raise FileNotFoundError("ensure PARQUET_BY_DATE is set in config.")
+
+    final = PARQUET_BY_DATE / f"{day.isoformat()}.parquet"
+
+    # build final name
+    tmp = final.with_name(final.name + ".tmp")
+    # write file to tmp (for atomic lock incase read_series or other func is running)
+    df.to_parquet(tmp, index=False)
+    # write file to database
+    os.replace(tmp, final)
+    log.info("write_day %s: %d rows -> %s", day, len(df), final.name)
+
+    return final
