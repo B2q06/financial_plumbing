@@ -130,3 +130,55 @@ def read_series(
         )
     assert isinstance(series, pd.Series)
     return series
+
+
+class NoDataForDate(Exception):
+    """EODHD returned no rows for the requested date -_-"""
+
+
+def fetch_bulk_prices(date: str) -> pd.DataFrame:
+    """Every US ticker's bar for one trading day from EODHD's bulk endpoint (100 quota units).
+
+    Args:
+        date: ``"YYYY-MM-DD"``. Weekends, holidays and today-before-the-close return nothing.
+
+    Returns:
+        DataFrame sorted by ticker with columns ``ticker, exchange, date, open, high, low, close, adjusted_close,
+        volume``; ``date`` holds ``datetime.date`` objects. Typically 45-50k rows.
+
+    Raises:
+        NoDataForDate: EODHD returned no rows for that date.
+        ValueError: malformed date, or the response carried rows for a different date.
+        httpx.HTTPStatusError: see ``eodhd_get``.
+    """
+    dt.date.fromisoformat(date)
+
+    r = eodhd_get("eod-bulk-last-day/US", date=date)  # bad token -> 401, spent quota -> 402, 429 retried inside
+
+    # create variable with the json data
+    json_data = r.json()
+
+    # transform json -> df
+    df = pd.DataFrame(json_data)
+
+    if df.empty:
+        raise NoDataForDate(f"no data for {date}")
+
+    # rename columns to match data schema
+    df = df.rename(columns={"code": "ticker", "exchange_short_name": "exchange"})
+
+    # drop prev_close, change and change_p
+    keep = ["ticker", "exchange", "date", "open", "high", "low", "close", "adjusted_close", "volume"]
+    df = df[keep]
+
+    # set date column to actual date data type from strings
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+
+    expected = dt.date.fromisoformat(date)
+    if not (df["date"] == expected).all():
+        raise ValueError(f"wtf? The response contains dates other than {date}")
+
+    df = df.sort_values("ticker")
+    log.info("fetch_bulk_prices %s: %d rows", date, len(df))
+    assert isinstance(df, pd.DataFrame)
+    return df
