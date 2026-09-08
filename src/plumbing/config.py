@@ -11,6 +11,7 @@ load_dotenv(PROJECT / ".env")  # must run before anything below reads os.environ
 DATA = Path(os.environ.get("DATA_DIR", PROJECT.parent / "data"))  # default: data/ beside the project
 PARQUET_BY_TICKER = DATA / "parquet" / "prices_by_ticker"
 PARQUET_BY_DATE = DATA / "parquet" / "prices_by_date"
+LOGS = DATA / "logs"
 
 EODHD_TOKEN = os.environ["EODHD_TOKEN"]
 OPENFIGI_TOKEN = os.environ["OPENFIGI_TOKEN"]
