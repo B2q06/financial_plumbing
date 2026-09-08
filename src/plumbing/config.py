@@ -12,6 +12,7 @@ DATA = Path(os.environ.get("DATA_DIR", PROJECT.parent / "data"))  # default: dat
 PARQUET_BY_TICKER = DATA / "parquet" / "prices_by_ticker"
 PARQUET_BY_DATE = DATA / "parquet" / "prices_by_date"
 LOGS = DATA / "logs"
+STORE_LOCK = DATA / "parquet" / "refresh.lock"  # held by any job writing the parquet store
 
 EODHD_TOKEN = os.environ["EODHD_TOKEN"]
 OPENFIGI_TOKEN = os.environ["OPENFIGI_TOKEN"]
