@@ -4,51 +4,25 @@ Today the master is data/security_master.parquet written by scripts/seed_master.
 When Postgres exists, only _load() changes (SELECT ticker, figi FROM security_alias WHERE valid_to IS NULL).
 """
 
-
 import json
-
-
 import logging
-
-
 import os
-
-
 import time
-
-
 from concurrent.futures import ThreadPoolExecutor
 
-
 import httpx
-
-
 import pandas as pd
-
 
 from plumbing.config import DATA, EODHD_TOKEN, OPENFIGI_TOKEN, PARQUET_BY_TICKER
 
-
 log = logging.getLogger(__name__)
 
-
 MASTER = DATA / "security_master.parquet"
-
-
 FUND_DIR = DATA / "fundamentals"
-
-
 GICS_CSV = DATA / "gics_hierarchy.csv"
-
-
 OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
-
-
 MAJOR_VENUES = {"NYSE", "NASDAQ", "NYSE ARCA", "NYSE MKT", "AMEX", "BATS"}
-
-
 UNIVERSE_TYPES = {"Common Stock"}
-
 
 _figi_by_ticker: dict[str, str] | None = None
 
@@ -112,6 +86,9 @@ def path_for(ticker: str):
         TickerNotFound: see ``figi_for``.
     """
     return PARQUET_BY_TICKER / f"{figi_for(ticker)}.parquet"
+
+
+# ---- building the master: used by scripts/seed_master.py (all tickers) and add_ticker (one) ----
 
 
 def symbol_list() -> pd.DataFrame:
@@ -293,6 +270,70 @@ def gics_codes(df: pd.DataFrame) -> pd.DataFrame:
         (df.gics_code.str.len() == 8).sum(),
     )
     return df
+
+
+def add_ticker(t: str) -> None:
+    """Add one ticker to the security master and reload the cache.
+
+    OpenFIGI for the FIGI, fundamentals for name/venue/type/ISIN/GICS, then one row appended to the master.
+    If the FIGI already belongs to another ticker the security was renamed: the old row is marked delisted and
+    both map to the same price file.
+
+    Called by the daily refresh for tickers in the bulk file the master doesn't know, and by compaction.
+    POSTGRES-TODO: the parquet append becomes INSERTs on ``security`` and ``security_alias``.
+
+    Args:
+        t: ticker code; case-insensitive.
+
+    Raises:
+        ValueError: already in the master.
+        httpx.HTTPStatusError: OpenFIGI or EODHD error.
+    """
+    t = t.upper()
+    if t in master_tickers():
+        raise ValueError(f"{t} is already in the security master")
+    figi_df = openfigi([t])
+    fdmtls_df = fundamentals([t])
+    gen_dict = fundamentals_general(t)
+
+    g_df = pd.DataFrame([gen_dict]) if gen_dict else pd.DataFrame([{"Code": t}])
+    for col in ("Name", "Exchange", "Type", "ISIN"):
+        if col not in g_df.columns:
+            g_df[col] = None
+    g_df = g_df[["Code", "Name", "Exchange", "Type", "ISIN"]]
+    g_df = g_df.rename(columns={"Code": "ticker", "Name": "name", "Exchange": "venue", "Type": "type", "ISIN": "isin"})
+    g_df["ticker"] = t  # fundamentals echo the code with its own casing/suffix; key on what we were asked for
+
+    row = figi_df.merge(fdmtls_df, on="ticker").merge(g_df, on="ticker")
+    row["in_universe"] = row["type"].isin(UNIVERSE_TYPES) & row["venue"].isin(MAJOR_VENUES)
+    row["seeded_at"] = pd.Timestamp.now().floor("s")
+    row = gics_codes(row)
+
+    master = pd.read_parquet(MASTER)
+
+    figi = row["figi"].iloc[0]
+    if figi is not None and not pd.isna(figi):
+        dup = master[(master["figi"] == figi) & (master["ticker"] != t)]
+        if not dup.empty:
+            old = dup["ticker"].tolist()
+            log.warning("rename: %s shares FIGI %s with %s -> marking old row(s) delisted", t, figi, old)
+            master.loc[dup.index, "is_delisted"] = True
+
+    row = row[master.columns]
+    master = pd.concat([master, row], ignore_index=True)
+    tmp = MASTER.with_name(MASTER.name + ".tmp")
+    master.to_parquet(tmp, index=False)
+    os.replace(tmp, MASTER)
+    reload()
+
+    log.info(
+        "add_ticker %s -> %s (%s, %s, gics %s)",
+        t,
+        row["figi"].iloc[0],
+        row["type"].iloc[0],
+        row["venue"].iloc[0],
+        row["gics_code"].iloc[0],
+    )
 
 
 def master_tickers() -> set[str]:
