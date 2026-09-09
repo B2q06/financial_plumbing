@@ -14,6 +14,7 @@ import duckdb
 import pandas as pd
 
 from plumbing.config import PARQUET_BY_DATE, STORE_LOCK
+from plumbing.data.db import job_finished, job_started
 from plumbing.data.master import add_ticker, master_tickers, path_for
 
 log = logging.getLogger(__name__)
@@ -204,4 +205,9 @@ if __name__ == "__main__":
     from plumbing.log import setup
 
     setup("compact")
-    run()
+    run_id = job_started("compact")
+    try:
+        job_finished(run_id, run())
+    except Exception as e:
+        job_finished(run_id, error=repr(e))
+        raise
