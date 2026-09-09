@@ -293,3 +293,8 @@ def gics_codes(df: pd.DataFrame) -> pd.DataFrame:
         (df.gics_code.str.len() == 8).sum(),
     )
     return df
+
+
+def master_tickers() -> set[str]:
+    """Every ticker the master knows, resolved or surrogate, as a set."""
+    return set(_load())
