@@ -1,29 +1,16 @@
 from pathlib import Path
 
-
 import duckdb
-
-
 import pandas as pd
-
-
 import httpx
-
-
 import datetime as dt
-
-
 import logging
-
-
 import os
-
+import threading
+import time
 
 from plumbing.config import EODHD_TOKEN, PARQUET_BY_DATE, PARQUET_BY_TICKER
-
-
 from plumbing.data.master import TickerNotFound, path_for
-
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +120,72 @@ def read_series(
         )
     assert isinstance(series, pd.Series)
     return series
+
+
+EODHD = "https://eodhd.com/api"
+REQUESTS_PER_MINUTE = 950  # plan ceiling is ~1,000-1,200/min (X-RateLimit-Limit); stay under it, never burst
+
+
+class _RateGate:
+    """Let one request through every 60/REQUESTS_PER_MINUTE seconds, across all threads.
+
+    A turnstile: workers queue on the lock, each waits until the next slot, then goes. The worker count no
+    longer sets the rate; this does.
+    """
+
+    def __init__(self, per_minute: int):
+        self.interval = 60.0 / per_minute
+        self.lock = threading.Lock()
+        self.next_slot = 0.0
+
+    def wait(self) -> None:
+        with self.lock:
+            now = time.monotonic()
+            if now < self.next_slot:
+                time.sleep(self.next_slot - now)
+                now = time.monotonic()
+            self.next_slot = now + self.interval
+
+
+_gate = _RateGate(REQUESTS_PER_MINUTE)
+
+
+def eodhd_get(path: str, timeout: int = 60, **params) -> httpx.Response:
+    """GET one EODHD endpoint. The single door every EODHD call goes through.
+
+    Adds the token and ``fmt=json``, waits for the shared rate gate (950 requests/min across all threads), retries
+    HTTP 429 with 5/10/20/40 s backoff, and pauses briefly when the per-minute budget runs low.
+
+    Args:
+        path: endpoint path after ``https://eodhd.com/api/``, e.g. ``"eod/AAPL.US"``.
+        timeout: seconds per request.
+        **params: query parameters for the endpoint (``date=``, ``type=``, ``order=`` ...).
+
+    Returns:
+        The successful ``httpx.Response``; call ``.json()`` on it.
+
+    Raises:
+        httpx.HTTPStatusError: any non-429 error status (401 bad token, 402 quota spent, 404 unknown symbol),
+            or a fifth consecutive 429.
+        httpx.TransportError: network failure; not retried here (see ``jobs.refresh.fetch_with_retry``).
+    """
+    url = f"{EODHD}/{path}"
+    for attempt in range(5):
+        _gate.wait()
+        r = httpx.get(url, params={"api_token": EODHD_TOKEN, "fmt": "json", **params}, timeout=timeout)
+        if r.status_code == 429:
+            wait = 5 * 2**attempt
+            log.warning("%s: 429 rate limited, retry %d/4 in %ds", path, attempt + 1, wait)
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        remaining = int(r.headers.get("X-RateLimit-Remaining", "1000"))
+        if remaining < 50:
+            log.debug("%s: %d requests left this minute, pausing 3s", path, remaining)
+            time.sleep(3)
+        return r
+    r.raise_for_status()  # fifth 429 in a row: give up loudly
+    return r
 
 
 class NoDataForDate(Exception):
