@@ -148,10 +148,11 @@ def openfigi(tickers: list[str]) -> pd.DataFrame:
 
 
 def fundamentals_general(ticker: str) -> dict:
-    """The ``General`` block of EODHD fundamentals for one ticker, cached as ``DATA/fundamentals/<ticker>.json``.
+    """The ``General`` block of EODHD fundamentals for one ticker.
 
-    10 quota units on a cache miss, free afterwards. Contains name, exchange, type, ISIN/CUSIP/CIK/LEI, the four
-    GICS names, description, officers, IPO date and more.
+    Postgres first (``fundamentals`` table); on a miss, one EODHD call (10 quota units), then stored: in Postgres
+    when the ticker is already in the master, else as ``DATA/fundamentals/<ticker>.json`` for ``load_master``
+    to pick up (the seed path on a fresh machine, before any security rows exist).
 
     Args:
         ticker: EODHD code.
@@ -159,9 +160,15 @@ def fundamentals_general(ticker: str) -> dict:
     Returns:
         The dict, or ``{}`` when EODHD has no fundamentals for it (funds, preferreds, some OTC).
     """
-    cache = FUND_DIR / f"{ticker}.json"
-    if cache.exists():
-        return json.loads(cache.read_text())
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT f.general FROM fundamentals f JOIN security_alias a USING (key) WHERE a.ticker = %s AND a.valid_to IS NULL",
+            (ticker,),
+        )
+        hit = cur.fetchone()
+    if hit:
+        return hit[0]
+
     for attempt in range(6):
         r = httpx.get(
             f"https://eodhd.com/api/fundamentals/{ticker}.US",
@@ -178,7 +185,16 @@ def fundamentals_general(ticker: str) -> dict:
         r.raise_for_status()
         body = r.json()
         g = body if isinstance(body, dict) else {}
-    cache.write_text(json.dumps(g))
+
+    if g and ticker in _load():
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fundamentals (key, general) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET general = EXCLUDED.general, fetched_at = now()",
+                (_load()[ticker], Json(g)),
+            )
+    else:
+        FUND_DIR.mkdir(parents=True, exist_ok=True)
+        (FUND_DIR / f"{ticker}.json").write_text(json.dumps(g))
     return g
 
 
