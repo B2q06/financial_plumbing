@@ -307,3 +307,29 @@ def repull(ticker: str) -> Path:
 
     log.info("repull %s -> %s: %d bars %s..%s", ticker, final.name, len(df), df["date"].iloc[0], df["date"].iloc[-1])
     return final
+
+
+def corporate_actions(date: str) -> set[str]:
+    """Tickers that had a split or a dividend on a date (two bulk calls, 200 quota units).
+
+    Their adjusted history changed that day; the caller (``jobs.refresh.run``) repulls each one.
+
+    Args:
+        date: ``"YYYY-MM-DD"``.
+
+    Returns:
+        Set of ticker codes; empty on a day with none. Includes OTC names that may not be in the master.
+
+    Raises:
+        ValueError: malformed date.
+        httpx.HTTPStatusError: see ``eodhd_get``.
+    """
+    dt.date.fromisoformat(date)
+
+    codes: set[str] = set()
+    for kind in ("splits", "dividends"):
+        r = eodhd_get("eod-bulk-last-day/US", date=date, type=kind)
+        codes |= {row["code"] for row in r.json()}
+
+    log.info("corporate_actions %s: %d tickers", date, len(codes))
+    return codes
