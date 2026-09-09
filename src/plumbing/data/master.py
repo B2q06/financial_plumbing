@@ -6,18 +6,19 @@ When Postgres exists, only _load() changes (SELECT ticker, figi FROM security_al
 
 import json
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pandas as pd
+from psycopg.types.json import Json
 
 from plumbing.config import DATA, EODHD_TOKEN, OPENFIGI_TOKEN, PARQUET_BY_TICKER
+from plumbing.data.db import connect
 
 log = logging.getLogger(__name__)
 
-MASTER = DATA / "security_master.parquet"
+MASTER = DATA / "security_master.parquet"  # legacy seed output; Postgres is the source of truth now
 FUND_DIR = DATA / "fundamentals"
 GICS_CSV = DATA / "gics_hierarchy.csv"
 OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
@@ -32,25 +33,16 @@ class TickerNotFound(Exception):
 
 
 def _load() -> dict[str, str]:
-    """Load the ticker -> file-key dict once and cache it at module level.
+    """Load the ticker -> file-key dict once (current aliases from Postgres) and cache it at module level.
 
     Key is the composite FIGI when OpenFIGI resolved the ticker, else the surrogate ``UNK_<ticker>``.
-    POSTGRES-TODO: becomes ``SELECT ticker, key FROM security_alias WHERE valid_to IS NULL``.
     """
     global _figi_by_ticker
     if _figi_by_ticker is None:
-        df = pd.read_parquet(MASTER)
-        # file key: the composite FIGI when OpenFIGI resolved it, else a surrogate UNK_<ticker> so the
-        # security is still tracked (mostly preferreds and some OTC). TickerNotFound = not in the master at all.
-        key = df["figi"].where(df["figi_status"] == "ok", "UNK_" + df["ticker"])
-        _figi_by_ticker = dict(zip(df["ticker"], key))
-        log.debug(
-            "master loaded: %d tickers (%d FIGI, %d surrogate) from %s",
-            len(_figi_by_ticker),
-            (df["figi_status"] == "ok").sum(),
-            (df["figi_status"] != "ok").sum(),
-            MASTER.name,
-        )
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT ticker, key FROM security_alias WHERE valid_to IS NULL")
+            _figi_by_ticker = dict(cur.fetchall())
+        log.debug("master loaded: %d tickers from postgres", len(_figi_by_ticker))
     return _figi_by_ticker
 
 
@@ -280,7 +272,6 @@ def add_ticker(t: str) -> None:
     both map to the same price file.
 
     Called by the daily refresh for tickers in the bulk file the master doesn't know, and by compaction.
-    POSTGRES-TODO: the parquet append becomes INSERTs on ``security`` and ``security_alias``.
 
     Args:
         t: ticker code; case-insensitive.
@@ -308,22 +299,60 @@ def add_ticker(t: str) -> None:
     row["in_universe"] = row["type"].isin(UNIVERSE_TYPES) & row["venue"].isin(MAJOR_VENUES)
     row["seeded_at"] = pd.Timestamp.now().floor("s")
     row = gics_codes(row)
+    row = row.astype(object).where(pd.notna(row), None)
 
-    master = pd.read_parquet(MASTER)
+    r = row.iloc[0]
+    figi = r["figi"] if r["figi_status"] == "ok" else None
+    key = figi or f"UNK_{t}"
 
-    figi = row["figi"].iloc[0]
-    if figi is not None and not pd.isna(figi):
-        dup = master[(master["figi"] == figi) & (master["ticker"] != t)]
-        if not dup.empty:
-            old = dup["ticker"].tolist()
-            log.warning("rename: %s shares FIGI %s with %s -> marking old row(s) delisted", t, figi, old)
-            master.loc[dup.index, "is_delisted"] = True
-
-    row = row[master.columns]
-    master = pd.concat([master, row], ignore_index=True)
-    tmp = MASTER.with_name(MASTER.name + ".tmp")
-    master.to_parquet(tmp, index=False)
-    os.replace(tmp, MASTER)
+    with connect() as conn, conn.cursor() as cur:
+        if figi:
+            cur.execute(
+                "SELECT ticker FROM security_alias WHERE key = %s AND valid_to IS NULL AND ticker <> %s", (key, t)
+            )
+            old = [x[0] for x in cur.fetchall()]
+            if old:
+                log.warning("rename: %s shares FIGI %s with %s -> closing old alias(es), marking delisted", t, key, old)
+                cur.execute(
+                    "UPDATE security_alias SET valid_to = CURRENT_DATE WHERE key = %s AND valid_to IS NULL", (key,)
+                )
+                cur.execute("UPDATE security SET is_delisted = TRUE, updated_at = now() WHERE key = %s", (key,))
+        cur.execute(
+            """INSERT INTO security (key, figi, share_class_figi, ticker, name, venue, type, openfigi_type, isin,
+                   in_universe, gic_sector, gic_group, gic_industry, gic_sub_industry, gics_code, ipo_date,
+                   is_delisted, fund_category)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (key) DO UPDATE SET ticker = EXCLUDED.ticker, is_delisted = FALSE, updated_at = now()""",
+            (
+                key,
+                figi,
+                r["share_class_figi"],
+                t,
+                r["name"],
+                r["venue"],
+                r["type"],
+                r["openfigi_type"],
+                r["isin"],
+                bool(r["in_universe"]),
+                r["gic_sector"],
+                r["gic_group"],
+                r["gic_industry"],
+                r["gic_sub_industry"],
+                r["gics_code"],
+                pd.to_datetime(r["ipo_date"], errors="coerce").date() if r["ipo_date"] else None,
+                bool(r["is_delisted"]) if r["is_delisted"] is not None else False,
+                r["fund_category"],
+            ),
+        )
+        cur.execute(
+            "INSERT INTO security_alias (ticker, key, valid_from) VALUES (%s, %s, CURRENT_DATE) ON CONFLICT DO NOTHING",
+            (t, key),
+        )
+        if gen_dict:
+            cur.execute(
+                "INSERT INTO fundamentals (key, general) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET general = EXCLUDED.general, fetched_at = now()",
+                (key, Json(gen_dict)),
+            )
     reload()
 
     log.info(

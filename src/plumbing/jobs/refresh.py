@@ -6,6 +6,7 @@ import time
 import pandas as pd
 
 from plumbing.config import STORE_LOCK
+from plumbing.data.db import job_finished, job_started
 from plumbing.data.prices import NoDataForDate, fetch_bulk_prices, last_stored_date, write_day, corporate_actions, repull
 from plumbing.data.master import TickerNotFound, add_ticker, master_tickers
 
@@ -153,4 +154,9 @@ if __name__ == "__main__":
     from plumbing.log import setup
 
     setup("refresh")
-    run()
+    run_id = job_started("refresh")
+    try:
+        job_finished(run_id, run())
+    except Exception as e:
+        job_finished(run_id, error=repr(e))
+        raise
