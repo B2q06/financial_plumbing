@@ -1,30 +1,16 @@
 import datetime as dt
-
-
 import logging
-
-
+from concurrent.futures import ThreadPoolExecutor
 import httpx
-
-
 import time
-
-
 import pandas as pd
 
-
 from plumbing.config import STORE_LOCK
-
-
 from plumbing.data.prices import NoDataForDate, fetch_bulk_prices, last_stored_date, write_day, corporate_actions, repull
-
-
 from plumbing.data.master import TickerNotFound, add_ticker, master_tickers
 
 
 LOCK = STORE_LOCK
-
-
 log = logging.getLogger(__name__)
 
 
@@ -120,6 +106,47 @@ def run(start: str | None = None, through: str | None = None) -> dict:
     log.info("done: %d written, %d skipped, %d repulled", len(written), len(skipped), len(repulled))
 
     return {"start": start, "through": through, "written": written, "skipped": skipped, "repulled": repulled}
+
+
+def repull_all(tickers: list[str] | str = "all", workers: int = 8) -> dict:
+    """Rewrite price files from EODHD full history, many at once.
+
+    The one-time migration to FIGI-keyed files and the quarterly backstop against adjustment drift.
+    Requests are paced by ``eodhd_get``'s rate gate, so ``workers`` sets concurrency, not rate.
+
+    Args:
+        tickers: list of tickers, or ``"all"`` for every ticker in the master.
+        workers: threads in flight (8 ≈ 1,000 requests/min).
+
+    Returns:
+        ``{"ok": [...], "failed": [...]}``; one failure never stops the others.
+    """
+    if tickers == "all":
+        tickers = sorted(master_tickers())
+
+    ok: list[str] = []
+    failed: list[str] = []
+    log.info("repull_all: %d tickers, %d workers", len(tickers), workers)
+
+    def one(t: str) -> tuple[str, Exception | None]:
+        try:
+            repull(t)
+            return t, None
+        except Exception as e:  # noqa: BLE001 - one bad ticker must not stop the other 51k
+            return t, e
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for i, (t, err) in enumerate(pool.map(one, tickers), 1):
+            if err is None:
+                ok.append(t)
+            else:
+                log.warning("%s failed: %s", t, err)
+                failed.append(t)
+            if i % 1000 == 0:
+                log.info("repull_all: %d/%d (%d failed)", i, len(tickers), len(failed))
+
+    log.info("repull_all done: %d ok, %d failed%s", len(ok), len(failed), f" -> {failed}" if failed else "")
+    return {"ok": ok, "failed": failed}
 
 
 if __name__ == "__main__":
