@@ -14,5 +14,11 @@ PARQUET_BY_DATE = DATA / "parquet" / "prices_by_date"
 LOGS = DATA / "logs"
 STORE_LOCK = DATA / "parquet" / "refresh.lock"  # held by any job writing the parquet store
 
+# 3rd party services
 EODHD_TOKEN = os.environ["EODHD_TOKEN"]
 OPENFIGI_TOKEN = os.environ["OPENFIGI_TOKEN"]
+
+# database stuff
+PG_DSN = os.environ["PG_DSN"]
+
+
