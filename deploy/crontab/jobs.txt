@@ -1,0 +1,3 @@
+30 17 * * 1-5   python -m plumbing.jobs.refresh
+0  11 * * 0     python -m plumbing.jobs.refresh
+0  12 * * 0     python -m plumbing.jobs.compact
