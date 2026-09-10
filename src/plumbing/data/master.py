@@ -4,6 +4,7 @@ Today the master is data/security_master.parquet written by scripts/seed_master.
 When Postgres exists, only _load() changes (SELECT ticker, figi FROM security_alias WHERE valid_to IS NULL).
 """
 
+import datetime as dt
 import json
 import logging
 import time
@@ -384,3 +385,44 @@ def add_ticker(t: str) -> None:
 def master_tickers() -> set[str]:
     """Every ticker the master knows, resolved or surrogate, as a set."""
     return set(_load())
+
+
+def mark_seen(day: dt.date, seen: set[str]) -> list[str]:
+    """Delisting detection for one daily bulk file.
+
+    Tickers present today get ``missing_since`` cleared. Listed tickers absent today get ``missing_since`` set
+    to today if it was null. Anything absent for a full trading week (``missing_since`` <= today - 7
+    calendar days) is marked delisted and its current alias closed. A day's bulk file is partial until the next
+    evening's re-pull, so a one-day absence is expected and never delists.
+
+    Args:
+        day: the bulk file's date.
+        seen: every ticker in that file.
+
+    Returns:
+        Tickers delisted on this pass.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE security SET missing_since = NULL WHERE missing_since IS NOT NULL AND ticker = ANY(%s)",
+            (list(seen),),
+        )
+        cur.execute(
+            "UPDATE security SET missing_since = %s WHERE NOT is_delisted AND missing_since IS NULL AND NOT (ticker = ANY(%s))",
+            (day, list(seen)),
+        )
+        cur.execute(
+            "UPDATE security SET is_delisted = TRUE, updated_at = now() "
+            "WHERE NOT is_delisted AND missing_since IS NOT NULL AND missing_since <= %s - INTERVAL '7 days' RETURNING ticker, key",
+            (day,),
+        )
+        gone = cur.fetchall()
+        if gone:
+            cur.execute(
+                "UPDATE security_alias SET valid_to = %s WHERE valid_to IS NULL AND key = ANY(%s)",
+                (day, [k for _, k in gone]),
+            )
+            log.warning("delisted after a week absent: %s", [t for t, _ in gone])
+    if gone:
+        reload()
+    return [t for t, _ in gone]
