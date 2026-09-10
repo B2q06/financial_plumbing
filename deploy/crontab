@@ -1,3 +1,4 @@
+# supercronic reads this. Times are container-local; set TZ=America/Chicago in compose so these are Central.
 30 17 * * 1-5   python -m plumbing.jobs.refresh
 0  11 * * 0     python -m plumbing.jobs.refresh
 0  12 * * 0     python -m plumbing.jobs.compact
