@@ -7,8 +7,15 @@ import pandas as pd
 
 from plumbing.config import STORE_LOCK
 from plumbing.data.db import job_finished, job_started
-from plumbing.data.prices import NoDataForDate, fetch_bulk_prices, last_stored_date, write_day, corporate_actions, repull
-from plumbing.data.master import TickerNotFound, add_ticker, master_tickers
+from plumbing.data.prices import (
+    NoDataForDate,
+    fetch_bulk_prices,
+    last_stored_date,
+    write_day,
+    corporate_actions,
+    repull,
+)
+from plumbing.data.master import TickerNotFound, add_ticker, mark_seen, master_tickers
 
 
 LOCK = STORE_LOCK
@@ -61,6 +68,7 @@ def run(start: str | None = None, through: str | None = None) -> dict:
 
     written: list[dt.date] = []
     skipped: list[dt.date] = []
+    delisted: list[str] = []
 
     d = start
 
@@ -76,6 +84,7 @@ def run(start: str | None = None, through: str | None = None) -> dict:
                     add_ticker(t)
 
                 write_day(df)
+                delisted += mark_seen(d, set(df["ticker"]))
                 written.append(d)
                 log.info("%s written", d)
 
@@ -104,9 +113,22 @@ def run(start: str | None = None, through: str | None = None) -> dict:
                 add_ticker(t)
                 repull(t)
             repulled.append(t)
-    log.info("done: %d written, %d skipped, %d repulled", len(written), len(skipped), len(repulled))
+    log.info(
+        "done: %d written, %d skipped, %d repulled, %d delisted",
+        len(written),
+        len(skipped),
+        len(repulled),
+        len(delisted),
+    )
 
-    return {"start": start, "through": through, "written": written, "skipped": skipped, "repulled": repulled}
+    return {
+        "start": start,
+        "through": through,
+        "written": written,
+        "skipped": skipped,
+        "repulled": repulled,
+        "delisted": delisted,
+    }
 
 
 def repull_all(tickers: list[str] | str = "all", workers: int = 8) -> dict:
