@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from plumbing.data import read_series
+from plumbing.data.prices import read_series
 
 app = FastAPI()
 
