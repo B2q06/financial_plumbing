@@ -23,7 +23,7 @@ services:
       DATA_DIR: /data
       PG_DSN: postgresql://plumbing:${POSTGRES_PASSWORD}@postgres:5432/plumbing
     volumes:
-      - /home/b/projects/regime-change/data:/data
+      - ${DATA_DIR}:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,7 +39,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /home/b/projects/regime-change/data:/data
+      - ${DATA_DIR}:/data
     depends_on:
       postgres:
         condition: service_healthy
