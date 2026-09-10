@@ -1,4 +1,4 @@
-import FastAPI
+from fastapi import FastAPI
 
 from plumbing.data import read_series
 
