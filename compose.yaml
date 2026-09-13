@@ -1,3 +1,5 @@
+name: fp
+
 services:
   postgres:
     image: postgres:17
