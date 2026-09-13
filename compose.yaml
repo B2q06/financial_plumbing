@@ -52,3 +52,8 @@ services:
 
 volumes:
   pgdata:
+    name: fp-pgdata
+
+networks:
+  default:
+    name: fp-net
