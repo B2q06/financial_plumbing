@@ -8,8 +8,8 @@ preferreds, OTC), fed by the [EODHD](https://eodhd.com) API, with a security mas
 for it to grow into a factor manager: define a factor over a universe, backfill it across all of history, write
 trading logic against it, and backtest that logic. The data layer is done and solid. 
 
-I built this as a learning project, primarily by hand but leveraging AI to help heavily with syntax 
-and discovery of functions to fit my use case.
+I built this as a learning project.
+
 
 ## What it does atm
 

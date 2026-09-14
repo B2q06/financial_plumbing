@@ -53,7 +53,7 @@ def read_series(
 
     if not has_file and not inbox:
         raise FileNotFoundError(
-            f"no price file found for ticker: {ticker}, what the fuck are you even looking for?? Are you trying to trade norwegian fish futures again?"
+            f"no price file found for ticker: {ticker}"
         )
 
     if all_history:
@@ -61,7 +61,7 @@ def read_series(
 
     elif start is None:
         raise ValueError(
-            f"Start date required for {ticker} dumbass - Pass a start='YYYY-MM-DD' - Greedy? Want entire history? pass all_history=True"
+            f"Start date required for {ticker}. Pass start='YYYY-MM-DD', or all_history=True for the full series."
         )
 
     end = end or "3000-12-31"
