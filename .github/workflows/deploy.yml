@@ -28,11 +28,11 @@ jobs:
         run: docker compose build
       - name: restart services
         run: |
-          docker compose up -d
+          docker compose up -d --wait --wait-timeout 120
           docker compose ps --format '{{.Service}}: {{.Status}}'
       - name: smoke test
         run: |
           sleep 5
           docker compose exec -T scheduler /usr/local/bin/supercronic -test /app/deploy/crontab
           curl -sf "http://localhost:8000/series/SPY?start=2026-09-01" | head -c 120; echo
-          docker compose exec -T postgres psql -U plumbing -d plumbing -c "SELECT count(*) FROM security"
+          docker exec db-postgres psql -U fp -d fp -c "SELECT count(*) FROM security"
